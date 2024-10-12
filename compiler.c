@@ -43,7 +43,18 @@ typedef struct {
     // records the scope depth of the block where the local variable was declared
     int depth;
 } Local;
-typedef struct {
+typedef enum {
+    TYPE_FUNCTION,
+    TYPE_SCRIPT
+} FunctionType;
+
+// See: https://craftinginterpreters.com/calls-and-functions.html#a-stack-of-compilers
+typedef struct Compiler {
+    struct Compiler* enclosing;
+    // The function object being built
+    ObjFunction* function;
+    // This lets the compiler tell when it’s compiling top-level code versus the body of a function.
+    FunctionType type;
     Local locals[UINT8_COUNT];
     // tracks how many locals are in scope — how many of those array slots are in use
     int localCount;
@@ -53,10 +64,11 @@ typedef struct {
 
 Parser parser;
 Compiler* current = NULL;
-Chunk* compilingChunk;
 
+
+Chunk* compilingChunk;
 static Chunk* currentChunk() {
-    return compilingChunk;
+    return &current->function->chunk;
 }
 
 static void errorAt(Token* token, const char* message) {
@@ -132,6 +144,7 @@ static int emitJump(uint8_t instruction) {
     return currentChunk()->count - 2;
 }
 static void emitReturn() {
+    emitByte(OP_NIL);
     emitByte(OP_RETURN);
 }
 static uint8_t makeConstant(Value value) {
@@ -157,18 +170,48 @@ static void patchJump(int offset) {
     currentChunk()->code[offset] = (jump >> 8) & 0xff;
     currentChunk()->code[offset + 1] = jump & 0xff;
 }
-static void initCompiler(Compiler* compiler) {
+static void initCompiler(Compiler* compiler, FunctionType type) {
+    compiler->enclosing = current;
+    // I know, it looks dumb to null the function field only to immediately assign
+    // it a value a few lines later. More garbage collection-related paranoia.
+    compiler->function = NULL;
+    compiler->type = type;
     compiler->localCount = 0;
     compiler->scopeDepth = 0;
+    compiler->function = newFunction();
     current = compiler;
+
+    if (type != TYPE_SCRIPT) {
+        // Note that we’re careful to create a copy of the name string. Remember,
+        // the lexeme points directly into the original source code string. That
+        // string may get freed once the code is finished compiling. The function
+        // object we create in the compiler outlives the compiler and persists until
+        // runtime. So it needs its own heap-allocated name string that it can keep
+        // around.
+        current->function->name = copyString(parser.previous.start,
+                                             parser.previous.length);
+    }
+
+    // Remember that the compiler’s locals array keeps track of which stack slots are
+    // associated with which local variables or temporaries. From now on, the compiler
+    // implicitly claims stack slot zero for the VM’s own internal use. We give it an
+    // empty name so that the user can’t write an identifier that refers to it.
+    Local* local = &current->locals[current->localCount++];
+    local->depth = 0;
+    local->name.start = "";
+    local->name.length = 0;
 }
-static void endCompiler() {
+static ObjFunction* endCompiler() {
     emitReturn();
+    ObjFunction* function = current->function;
 #ifdef DEBUG_PRINT_CODE
     if (!parser.hadError) {
-        disassembleChunk(currentChunk(), "code");
+        disassembleChunk(currentChunk(), function->name != NULL
+            ? function->name->chars : "<script>");
     }
 #endif
+    current = current->enclosing;
+    return function;
 }
 
 static void beginScope() {
@@ -193,6 +236,7 @@ static void parsePrecedence(Precedence precedence);
 static int resolveLocal(Compiler* compiler, Token* name);
 static uint8_t identifierConstant(Token* name);
 static void and_(bool canAssign);
+static uint8_t argumentList();
 
 static void binary(bool canAssign) {
     TokenType operatorType = parser.previous.type;
@@ -212,6 +256,10 @@ static void binary(bool canAssign) {
         case TOKEN_SLASH:         emitByte(OP_DIVIDE); break;
         default: return; // Unreachable.
     }
+}
+static void call(bool canAssign) {
+    uint8_t argCount = argumentList();
+    emitBytes(OP_CALL, argCount);
 }
 static void literal(bool canAssign) {
     switch (parser.previous.type) {
@@ -285,7 +333,7 @@ static void unary(bool canAssign) {
 // expression with, say, else, and } would make for a pretty confusing infix
 // operator.
 ParseRule rules[] = {
-    [TOKEN_LEFT_PAREN]    = {grouping, NULL,   PREC_NONE},
+    [TOKEN_LEFT_PAREN]    = {grouping, call,   PREC_CALL},
     [TOKEN_RIGHT_PAREN]   = {NULL,     NULL,   PREC_NONE},
     [TOKEN_LEFT_BRACE]    = {NULL,     NULL,   PREC_NONE},
     [TOKEN_RIGHT_BRACE]   = {NULL,     NULL,   PREC_NONE},
@@ -420,6 +468,10 @@ static uint8_t parseVariable(const char* errorMessage) {
     return identifierConstant(&parser.previous);
 }
 static void markInitialized() {
+    // Before, we called markInitialized() only when we already knew we were in a local scope.
+    // Now, a top-level function declaration will also call this function. When that happens,
+    // there is no local variable to mark initialized—the function is bound to a global variable.
+    if (current->scopeDepth == 0) return;
     current->locals[current->localCount - 1].depth =
         current->scopeDepth;
 }
@@ -436,6 +488,20 @@ static void defineVariable(uint8_t global) {
     }
 
     emitBytes(OP_DEFINE_GLOBAL, global);
+}
+static uint8_t argumentList() {
+    uint8_t argCount = 0;
+    if (!check(TOKEN_RIGHT_PAREN)) {
+        do {
+            expression();
+            if (argCount == 255) {
+                error("Can't have more than 255 arguments.");
+            }
+            argCount++;
+        } while (match(TOKEN_COMMA));
+    }
+    consume(TOKEN_RIGHT_PAREN, "Expect ')' after arguments.");
+    return argCount;
 }
 static void and_(bool canAssign) {
     int endJump = emitJump(OP_JUMP_IF_FALSE);
@@ -459,6 +525,39 @@ static void block() {
     }
 
     consume(TOKEN_RIGHT_BRACE, "Expect '}' after block.");
+}
+static void function(FunctionType type) {
+    Compiler compiler;
+    initCompiler(&compiler, type);
+    beginScope();
+
+    consume(TOKEN_LEFT_PAREN, "Expect '(' after function name.");
+    if (!check(TOKEN_RIGHT_PAREN)) {
+        // See: https://craftinginterpreters.com/calls-and-functions.html#function-parameters
+        do {
+            current->function->arity++;
+            if (current->function->arity > 255) {
+                errorAtCurrent("Can't have more than 255 parameters.");
+            }
+            uint8_t constant = parseVariable("Expect parameter name.");
+            defineVariable(constant);
+        } while (match(TOKEN_COMMA));
+    }
+    consume(TOKEN_RIGHT_PAREN, "Expect ')' after parameters.");
+    consume(TOKEN_LEFT_BRACE, "Expect '{' before function body.");
+    block();
+
+    ObjFunction* function = endCompiler();
+    emitBytes(OP_CONSTANT, makeConstant(OBJ_VAL(function)));
+}
+static void funDeclaration() {
+    // See: https://craftinginterpreters.com/calls-and-functions.html#function-declarations
+    // A function declaration at the top level will bind the function to a global variable.
+    // Inside a block or other function, a function declaration creates a local variable.
+    uint8_t global = parseVariable("Expect function name.");
+    markInitialized();
+    function(TYPE_FUNCTION);
+    defineVariable(global);
 }
 static void varDeclaration() {
     uint8_t global = parseVariable("Expect variable name.");
@@ -547,6 +646,19 @@ static void printStatement() {
     consume(TOKEN_SEMICOLON, "Expect ';' after value.");
     emitByte(OP_PRINT);
 }
+static void returnStatement() {
+    if (current->type == TYPE_SCRIPT) {
+        error("Can't return from top-level code.");
+    }
+
+    if (match(TOKEN_SEMICOLON)) {
+        emitReturn();
+    } else {
+        expression();
+        consume(TOKEN_SEMICOLON, "Expect ';' after return value.");
+        emitByte(OP_RETURN);
+    }
+}
 static void whileStatement() {
     // After executing the body of a while loop, we jump all the way back to before the condition.
     // That way, we re-evaluate the condition expression on each iteration. We store the chunk’s
@@ -590,7 +702,9 @@ static void synchronize() {
     }
 }
 static void declaration() {
-    if (match(TOKEN_VAR)) {
+    if (match(TOKEN_FUN)) {
+        funDeclaration();
+    } else if (match(TOKEN_VAR)) {
         varDeclaration();
     } else {
         statement();
@@ -606,6 +720,8 @@ static void statement() {
         forStatement();
     } else if (match(TOKEN_IF)) {
         ifStatement();
+    } else if (match(TOKEN_RETURN)) {
+        returnStatement();
     } else if (match(TOKEN_WHILE)) {
         whileStatement();
     } else if (match(TOKEN_LEFT_BRACE)) {
@@ -617,11 +733,10 @@ static void statement() {
     }
 }
 
-bool compile(const char* source, Chunk* chunk) {
+ObjFunction* compile(const char* source) {
     initScanner(source);
     Compiler compiler;
-    initCompiler(&compiler);
-    compilingChunk = chunk;
+    initCompiler(&compiler, TYPE_SCRIPT);
 
     // will reset these at synchronization point (statement parsing)
     parser.hadError = false;
@@ -632,6 +747,6 @@ bool compile(const char* source, Chunk* chunk) {
     while (!match(TOKEN_EOF)) {
         declaration();
     }
-    endCompiler();
-    return !parser.hadError;
+    ObjFunction* function = endCompiler();
+    return parser.hadError ? NULL : function;
 }
