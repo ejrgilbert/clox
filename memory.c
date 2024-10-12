@@ -21,6 +21,17 @@ void* reallocate(void* pointer, size_t oldSize, size_t newSize) {
 
 static void freeObject(Obj* object) {
     switch (object->type) {
+        case OBJ_CLOSURE: {
+            // We free only the ObjClosure itself, not the ObjFunction. That’s because the closure
+            // doesn’t own the function. There may be multiple closures that all reference the same
+            // function, and none of them claims any special privilege over it. We can’t free the
+            // ObjFunction until all objects referencing it are gone—including even the surrounding
+            // function whose constant table contains it.
+            // Tracking that sounds tricky, and it is! That’s why we’ll write a garbage collector
+            // soon to manage it for us.
+            FREE(ObjClosure, object);
+            break;
+        }
         case OBJ_FUNCTION: {
             // We don’t need to explicitly free the function’s name because it’s an ObjString.
             // That means we can let the garbage collector manage its lifetime for us.
