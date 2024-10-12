@@ -26,6 +26,7 @@ typedef struct {
     Table globals;
     // String interning: https://craftinginterpreters.com/hash-tables.html#string-interning
     Table strings;
+    ObjUpvalue* openUpvalues;
     // GC: a pointer to the head of the list of objects
     Obj* objects;
 } VM;

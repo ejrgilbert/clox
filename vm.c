@@ -30,6 +30,7 @@ static Value clockNative(int argCount, Value* args) {
 static void resetStack() {
     vm.stackTop = vm.stack;
     vm.frameCount = 0;
+    vm.openUpvalues = NULL;
 }
 static void runtimeError(const char* format, ...) {
     va_list args;
@@ -151,7 +152,35 @@ static bool callValue(Value callee, int argCount) {
     return false;
 }
 static ObjUpvalue* captureUpvalue(Value* local) {
+    // See: https://craftinginterpreters.com/closures.html#tracking-open-upvalues
+    ObjUpvalue* prevUpvalue = NULL;
+    ObjUpvalue* upvalue = vm.openUpvalues;
+    while (upvalue != NULL && upvalue->location > local) {
+        prevUpvalue = upvalue;
+        upvalue = upvalue->next;
+    }
+
+    if (upvalue != NULL && upvalue->location == local) {
+        return upvalue;
+    }
     ObjUpvalue* createdUpvalue = newUpvalue(local);
+
+    // The local slot we stopped at is the slot we’re looking for. We found an existing
+    // upvalue capturing the variable, so we reuse that upvalue.
+    createdUpvalue->next = upvalue;
+
+    if (prevUpvalue == NULL) {
+        // We ran out of upvalues to search. When upvalue is NULL, it means every open upvalue
+        // in the list points to locals above the slot we’re looking for, or (more likely) the
+        // upvalue list is empty. Either way, we didn’t find an upvalue for our slot.
+        vm.openUpvalues = createdUpvalue;
+    } else {
+        // We found an upvalue whose local slot is below the one we’re looking for. Since the list is
+        // sorted, that means we’ve gone past the slot we are closing over, and thus there must not
+        // be an existing upvalue for it.
+        prevUpvalue->next = createdUpvalue;
+    }
+
     return createdUpvalue;
 }
 static bool isFalsey(Value value) {
