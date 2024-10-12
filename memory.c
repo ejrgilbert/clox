@@ -49,6 +49,10 @@ static void freeObject(Obj* object) {
             FREE(ObjString, object);
             break;
         }
+        case OBJ_UPVALUE:
+            // Multiple closures can close over the same variable, so ObjUpvalue does not own the variable it references.
+            FREE(ObjUpvalue, object);
+        break;
     }
 }
 void freeObjects() {
