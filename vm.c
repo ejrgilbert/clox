@@ -150,6 +150,10 @@ static bool callValue(Value callee, int argCount) {
     runtimeError("Can only call functions and classes.");
     return false;
 }
+static ObjUpvalue* captureUpvalue(Value* local) {
+    ObjUpvalue* createdUpvalue = newUpvalue(local);
+    return createdUpvalue;
+}
 static bool isFalsey(Value value) {
     return IS_NIL(value) || (IS_BOOL(value) && !AS_BOOL(value));
 }
@@ -260,6 +264,16 @@ static InterpretResult run() {
                 }
                 break;
             }
+            case OP_GET_UPVALUE: {
+                uint8_t slot = READ_BYTE();
+                push(*frame->closure->upvalues[slot]->location);
+                break;
+            }
+            case OP_SET_UPVALUE: {
+                uint8_t slot = READ_BYTE();
+                *frame->closure->upvalues[slot]->location = peek(0);
+                break;
+            }
             case OP_EQUAL: {
                 Value b = pop();
                 Value a = pop();
@@ -331,6 +345,26 @@ static InterpretResult run() {
                 ObjFunction* function = AS_FUNCTION(READ_CONSTANT());
                 ObjClosure* closure = newClosure(function);
                 push(OBJ_VAL(closure));
+
+                // This code is the magic moment when a closure comes to life. We iterate over each upvalue
+                // the closure expects. For each one, we read a pair of operand bytes. If the upvalue closes
+                // over a local variable in the enclosing function, we let captureUpvalue() do the work.
+                // Otherwise, we capture an upvalue from the surrounding function.
+                // An OP_CLOSURE instruction is emitted at the end of a function declaration. At the moment
+                // that we are executing that declaration, the current function is the surrounding one. That
+                // means the current function’s closure is stored in the CallFrame at the top of the callstack.
+                // So, to grab an upvalue from the enclosing function, we can read it right from the frame local
+                // variable, which caches a reference to that CallFrame.
+                for (int i = 0; i < closure->upvalueCount; i++) {
+                    uint8_t isLocal = READ_BYTE();
+                    uint8_t index = READ_BYTE();
+                    if (isLocal) {
+                        closure->upvalues[i] =
+                            captureUpvalue(frame->slots + index);
+                    } else {
+                        closure->upvalues[i] = frame->closure->upvalues[index];
+                    }
+                }
                 break;
             }
             case OP_RETURN: {

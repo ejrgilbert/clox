@@ -20,8 +20,18 @@ static Obj* allocateObject(size_t size, ObjType type) {
     return object;
 }
 ObjClosure* newClosure(ObjFunction* function) {
+    // Before creating the closure object itself, we allocate the array of upvalues and initialize
+    // them all to NULL. This weird ceremony around memory is a careful dance to please the (forthcoming)
+    // garbage collection deities. It ensures the memory manager never sees uninitialized memory.
+    ObjUpvalue** upvalues = ALLOCATE(ObjUpvalue*,
+                                   function->upvalueCount);
+    for (int i = 0; i < function->upvalueCount; i++) {
+        upvalues[i] = NULL;
+    }
     ObjClosure* closure = ALLOCATE_OBJ(ObjClosure, OBJ_CLOSURE);
     closure->function = function;
+    closure->upvalues = upvalues;
+    closure->upvalueCount = function->upvalueCount;
     return closure;
 }
 ObjFunction* newFunction() {

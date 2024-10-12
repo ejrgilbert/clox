@@ -22,6 +22,11 @@ void* reallocate(void* pointer, size_t oldSize, size_t newSize) {
 static void freeObject(Obj* object) {
     switch (object->type) {
         case OBJ_CLOSURE: {
+            // ObjClosure does not own the ObjUpvalue objects themselves, but it does own the array containing
+            // pointers to those upvalues.
+            ObjClosure* closure = (ObjClosure*)object;
+            FREE_ARRAY(ObjUpvalue*, closure->upvalues,
+                       closure->upvalueCount);
             // We free only the ObjClosure itself, not the ObjFunction. That’s because the closure
             // doesn’t own the function. There may be multiple closures that all reference the same
             // function, and none of them claims any special privilege over it. We can’t free the

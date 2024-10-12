@@ -69,6 +69,9 @@ typedef struct {
     // points to an ObjFunction and adds the necessary object header stuff
     Obj obj;
     ObjFunction* function;
+    // https://craftinginterpreters.com/closures.html#upvalues-in-closures
+    ObjUpvalue** upvalues;
+    int upvalueCount;
 } ObjClosure;
 
 ObjClosure* newClosure(ObjFunction* function);
