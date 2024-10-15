@@ -15,6 +15,10 @@ static void freeObject(Obj* object) {
 #endif
 
     switch (object->type) {
+        case OBJ_CLASS: {
+            FREE(ObjClass, object);
+            break;
+        }
         case OBJ_CLOSURE: {
             // ObjClosure does not own the ObjUpvalue objects themselves, but it does own the array containing
             // pointers to those upvalues.
@@ -129,6 +133,11 @@ static void blackenObject(Obj* object) {
     // “black” in the object’s state. A black object is any object whose isMarked field is set and that
     // is no longer in the gray stack.
     switch (object->type) {
+        case OBJ_CLASS: {
+            ObjClass* klass = (ObjClass*)object;
+            markObject((Obj*)klass->name);
+            break;
+        }
         case OBJ_CLOSURE: {
             // Each closure has a reference to the bare function it wraps, as well as an array of pointers to
             // the upvalues it captures. We trace all of those.

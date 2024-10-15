@@ -24,6 +24,11 @@ static Obj* allocateObject(size_t size, ObjType type) {
 #endif
     return object;
 }
+ObjClass* newClass(ObjString* name) {
+    ObjClass* klass = ALLOCATE_OBJ(ObjClass, OBJ_CLASS);
+    klass->name = name;
+    return klass;
+}
 ObjClosure* newClosure(ObjFunction* function) {
     // Before creating the closure object itself, we allocate the array of upvalues and initialize
     // them all to NULL. This weird ceremony around memory is a careful dance to please the (forthcoming)
@@ -120,6 +125,9 @@ static void printFunction(ObjFunction* function) {
 }
 void printObject(Value value) {
     switch (OBJ_TYPE(value)) {
+        case OBJ_CLASS:
+            printf("%s", AS_CLASS(value)->name->chars);
+        break;
         case OBJ_CLOSURE:
             printFunction(AS_CLOSURE(value)->function);
         break;
