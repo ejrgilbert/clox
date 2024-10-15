@@ -61,6 +61,8 @@ void freeObjects() {
         freeObject(object);
         object = next;
     }
+
+    free(vm.grayStack);
 }
 void markObject(Obj* object) {
     if (object == NULL) return;
@@ -69,7 +71,26 @@ void markObject(Obj* object) {
     printValue(OBJ_VAL(object));
     printf("\n");
 #endif
+
     object->isMarked = true;
+
+    // See: https://craftinginterpreters.com/garbage-collection.html#tracing-object-references
+    if (vm.grayCapacity < vm.grayCount + 1) {
+        // We could use any kind of data structure that lets us put items in and take them out easily.
+        // I picked a stack because that’s the simplest to implement with a dynamic array in C. It works
+        // mostly like other dynamic arrays we’ve built in Lox, except, note that it calls the system
+        // realloc() function and not our own reallocate() wrapper. The memory for the gray stack itself
+        // is not managed by the garbage collector. We don’t want growing the gray stack during a GC to
+        // cause the GC to recursively start a new GC. That could tear a hole in the space-time continuum.
+        vm.grayCapacity = GROW_CAPACITY(vm.grayCapacity);
+        vm.grayStack = (Obj**)realloc(vm.grayStack,
+                                      sizeof(Obj*) * vm.grayCapacity);
+
+        // Should be more robust, but okay for now
+        if (vm.grayStack == NULL) exit(1);
+    }
+
+    vm.grayStack[vm.grayCount++] = object;
 }
 void markValue(Value value) {
     // Some Lox values—numbers, Booleans, and nil—are stored directly inline in Value and require

@@ -29,6 +29,10 @@ typedef struct {
     ObjUpvalue* openUpvalues;
     // GC: a pointer to the head of the list of objects
     Obj* objects;
+    // See: https://craftinginterpreters.com/garbage-collection.html#a-worklist-for-gray-objects
+    int grayCount;
+    int grayCapacity;
+    Obj** grayStack;
 } VM;
 
 typedef enum {
