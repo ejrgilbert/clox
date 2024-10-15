@@ -3,23 +3,16 @@
 #include "memory.h"
 #include "vm.h"
 
-void* reallocate(void* pointer, size_t oldSize, size_t newSize) {
-    // Since all we passed in was a bare pointer to the first byte of memory,
-    // what does it mean to “update” the block’s size? Under the hood, the
-    // memory allocator maintains additional bookkeeping information for each
-    // block of heap-allocated memory, including its size.
-    if (newSize == 0) {
-        free(pointer);
-        return NULL;
-    }
-
-    void* result = realloc(pointer, newSize);
-    if (result == NULL) exit(1);
-
-    return result;
-}
+#ifdef DEBUG_LOG_GC
+#include <stdio.h>
+#include "debug.h"
+#endif
 
 static void freeObject(Obj* object) {
+#ifdef DEBUG_LOG_GC
+    printf("%p free type %d\n", (void*)object, object->type);
+#endif
+
     switch (object->type) {
         case OBJ_CLOSURE: {
             // ObjClosure does not own the ObjUpvalue objects themselves, but it does own the array containing
@@ -67,4 +60,46 @@ void freeObjects() {
         freeObject(object);
         object = next;
     }
+}
+
+void collectGarbage() {
+#ifdef DEBUG_LOG_GC
+    printf("-- gc begin\n");
+#endif
+
+#ifdef DEBUG_LOG_GC
+    printf("-- gc end\n");
+#endif
+}
+
+void* reallocate(void* pointer, size_t oldSize, size_t newSize) {
+    if (newSize > oldSize) {
+        // Whenever we call reallocate() to acquire more memory, we force a collection to run.
+        // The if check is because reallocate() is also called to free or shrink an allocation.
+        // We don’t want to trigger a GC for that—in particular because the GC itself will call
+        // reallocate() to free memory.
+
+        // If you don’t use allocation to trigger a GC, you have to make sure every possible place in
+        // code where you can loop and allocate memory also has a way to trigger the collector. Otherwise,
+        // the VM can get into a starved state where it needs more memory but never collects any.
+
+        // More sophisticated collectors might run on a separate thread or be interleaved periodically
+        // during program execution—often at function call boundaries or when a backward jump occurs.
+#ifdef DEBUG_STRESS_GC
+        collectGarbage();
+#endif
+    }
+    // Since all we passed in was a bare pointer to the first byte of memory,
+    // what does it mean to “update” the block’s size? Under the hood, the
+    // memory allocator maintains additional bookkeeping information for each
+    // block of heap-allocated memory, including its size.
+    if (newSize == 0) {
+        free(pointer);
+        return NULL;
+    }
+
+    void* result = realloc(pointer, newSize);
+    if (result == NULL) exit(1);
+
+    return result;
 }
