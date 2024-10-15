@@ -11,7 +11,7 @@
 // See: https://craftinginterpreters.com/calls-and-functions.html#the-call-stack
 // represents a single ongoing function call
 typedef struct {
-    ObjFunction* function;
+    ObjClosure* closure;
     uint8_t* ip;
     // points into the VM’s value stack at the first slot that this function can use
     Value* slots;
@@ -26,6 +26,7 @@ typedef struct {
     Table globals;
     // String interning: https://craftinginterpreters.com/hash-tables.html#string-interning
     Table strings;
+    ObjUpvalue* openUpvalues;
     // GC: a pointer to the head of the list of objects
     Obj* objects;
 } VM;

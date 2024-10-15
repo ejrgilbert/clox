@@ -30,6 +30,7 @@ static Value clockNative(int argCount, Value* args) {
 static void resetStack() {
     vm.stackTop = vm.stack;
     vm.frameCount = 0;
+    vm.openUpvalues = NULL;
 }
 static void runtimeError(const char* format, ...) {
     va_list args;
@@ -44,7 +45,7 @@ static void runtimeError(const char* format, ...) {
     // Then we print that line number along with the function name.
     for (int i = vm.frameCount - 1; i >= 0; i--) {
         CallFrame* frame = &vm.frames[i];
-        ObjFunction* function = frame->function;
+        ObjFunction* function = frame->closure->function;
         // The - 1 is because the IP is already sitting on the next instruction to be executed,
         // but we want the stack trace to point to the previous failed instruction.
         size_t instruction = frame->ip - function->chunk.code - 1;
@@ -102,10 +103,10 @@ Value pop() {
 static Value peek(int distance) {
     return vm.stackTop[-1 - distance];
 }
-static bool call(ObjFunction* function, int argCount) {
-    if (argCount != function->arity) {
+static bool call(ObjClosure* closure, int argCount) {
+    if (argCount != closure->function->arity) {
         runtimeError("Expected %d arguments but got %d.",
-            function->arity, argCount);
+            closure->function->arity, argCount);
         return false;
     }
     if (vm.frameCount == FRAMES_MAX) {
@@ -119,8 +120,8 @@ static bool call(ObjFunction* function, int argCount) {
     // its window into the stack. The arithmetic there ensures that the arguments
     // already on the stack line up with the function’s parameters
     CallFrame* frame = &vm.frames[vm.frameCount++];
-    frame->function = function;
-    frame->ip = function->chunk.code;
+    frame->closure = closure;
+    frame->ip = closure->function->chunk.code;
 
     // The funny little - 1 is to account for stack slot zero which the compiler set
     // aside for when we add methods later
@@ -130,8 +131,12 @@ static bool call(ObjFunction* function, int argCount) {
 static bool callValue(Value callee, int argCount) {
     if (IS_OBJ(callee)) {
         switch (OBJ_TYPE(callee)) {
-            case OBJ_FUNCTION:
-                return call(AS_FUNCTION(callee), argCount);
+            case OBJ_CLOSURE:
+                // We remove the code for calling objects whose type is OBJ_FUNCTION. Since we wrap all
+                // functions in ObjClosures, the runtime will never try to invoke a bare ObjFunction anymore.
+                // Those objects live only in constant tables and get immediately wrapped in closures before
+                // anything else sees them.
+                return call(AS_CLOSURE(callee), argCount);
             case OBJ_NATIVE: {
                 NativeFn native = AS_NATIVE(callee);
                 Value result = native(argCount, vm.stackTop - argCount);
@@ -145,6 +150,48 @@ static bool callValue(Value callee, int argCount) {
     }
     runtimeError("Can only call functions and classes.");
     return false;
+}
+static ObjUpvalue* captureUpvalue(Value* local) {
+    // See: https://craftinginterpreters.com/closures.html#tracking-open-upvalues
+    ObjUpvalue* prevUpvalue = NULL;
+    ObjUpvalue* upvalue = vm.openUpvalues;
+    while (upvalue != NULL && upvalue->location > local) {
+        prevUpvalue = upvalue;
+        upvalue = upvalue->next;
+    }
+
+    if (upvalue != NULL && upvalue->location == local) {
+        return upvalue;
+    }
+    ObjUpvalue* createdUpvalue = newUpvalue(local);
+
+    // The local slot we stopped at is the slot we’re looking for. We found an existing
+    // upvalue capturing the variable, so we reuse that upvalue.
+    createdUpvalue->next = upvalue;
+
+    if (prevUpvalue == NULL) {
+        // We ran out of upvalues to search. When upvalue is NULL, it means every open upvalue
+        // in the list points to locals above the slot we’re looking for, or (more likely) the
+        // upvalue list is empty. Either way, we didn’t find an upvalue for our slot.
+        vm.openUpvalues = createdUpvalue;
+    } else {
+        // We found an upvalue whose local slot is below the one we’re looking for. Since the list is
+        // sorted, that means we’ve gone past the slot we are closing over, and thus there must not
+        // be an existing upvalue for it.
+        prevUpvalue->next = createdUpvalue;
+    }
+
+    return createdUpvalue;
+}
+static void closeUpvalues(Value* last) {
+    // See: https://craftinginterpreters.com/closures.html#closing-upvalues-at-runtime
+    while (vm.openUpvalues != NULL &&
+           vm.openUpvalues->location >= last) {
+        ObjUpvalue* upvalue = vm.openUpvalues;
+        upvalue->closed = *upvalue->location;
+        upvalue->location = &upvalue->closed;
+        vm.openUpvalues = upvalue->next;
+    }
 }
 static bool isFalsey(Value value) {
     return IS_NIL(value) || (IS_BOOL(value) && !AS_BOOL(value));
@@ -172,7 +219,7 @@ static InterpretResult run() {
     (frame->ip += 2, \
     (uint16_t)((frame->ip[-2] << 8) | frame->ip[-1]))
 #define READ_CONSTANT() \
-    (frame->function->chunk.constants.values[READ_BYTE()])
+    (frame->closure->function->chunk.constants.values[READ_BYTE()])
 #define READ_STRING() AS_STRING(READ_CONSTANT())
 #define BINARY_OP(valueType, op) \
     do { \
@@ -194,8 +241,8 @@ static InterpretResult run() {
             printf(" ]");
         }
         printf("\n");
-        disassembleInstruction(&frame->function->chunk,
-            (int)(frame->ip - frame->function->chunk.code));
+        disassembleInstruction(&frame->closure->function->chunk,
+            (int)(frame->ip - frame->closure->function->chunk.code));
 #endif
         uint8_t instruction;
         switch (instruction = READ_BYTE()) {
@@ -254,6 +301,16 @@ static InterpretResult run() {
                     runtimeError("Undefined variable '%s'.", name->chars);
                     return INTERPRET_RUNTIME_ERROR;
                 }
+                break;
+            }
+            case OP_GET_UPVALUE: {
+                uint8_t slot = READ_BYTE();
+                push(*frame->closure->upvalues[slot]->location);
+                break;
+            }
+            case OP_SET_UPVALUE: {
+                uint8_t slot = READ_BYTE();
+                *frame->closure->upvalues[slot]->location = peek(0);
                 break;
             }
             case OP_EQUAL: {
@@ -323,9 +380,40 @@ static InterpretResult run() {
                 frame = &vm.frames[vm.frameCount - 1];
                 break;
             }
+            case OP_CLOSURE: {
+                ObjFunction* function = AS_FUNCTION(READ_CONSTANT());
+                ObjClosure* closure = newClosure(function);
+                push(OBJ_VAL(closure));
+
+                // This code is the magic moment when a closure comes to life. We iterate over each upvalue
+                // the closure expects. For each one, we read a pair of operand bytes. If the upvalue closes
+                // over a local variable in the enclosing function, we let captureUpvalue() do the work.
+                // Otherwise, we capture an upvalue from the surrounding function.
+                // An OP_CLOSURE instruction is emitted at the end of a function declaration. At the moment
+                // that we are executing that declaration, the current function is the surrounding one. That
+                // means the current function’s closure is stored in the CallFrame at the top of the callstack.
+                // So, to grab an upvalue from the enclosing function, we can read it right from the frame local
+                // variable, which caches a reference to that CallFrame.
+                for (int i = 0; i < closure->upvalueCount; i++) {
+                    uint8_t isLocal = READ_BYTE();
+                    uint8_t index = READ_BYTE();
+                    if (isLocal) {
+                        closure->upvalues[i] =
+                            captureUpvalue(frame->slots + index);
+                    } else {
+                        closure->upvalues[i] = frame->closure->upvalues[index];
+                    }
+                }
+                break;
+            }
+            case OP_CLOSE_UPVALUE:
+                closeUpvalues(vm.stackTop - 1);
+                pop();
+                break;
             case OP_RETURN: {
                 // See: https://craftinginterpreters.com/calls-and-functions.html#returning-from-functions
                 Value result = pop();
+                closeUpvalues(frame->slots);
                 vm.frameCount--;
                 if (vm.frameCount == 0) {
                     pop();
@@ -353,7 +441,10 @@ InterpretResult interpret(const char* source) {
 
     // Now you can see why the compiler sets aside stack slot zero—that stores the function being called
     push(OBJ_VAL(function));
-    // set up the first frame for executing the top-level code
-    call(function, 0);
+    // set up the first CallFrame for executing the top-level code
+    ObjClosure* closure = newClosure(function);
+    pop();
+    push(OBJ_VAL(closure));
+    call(closure, 0);
     return run();
 }
