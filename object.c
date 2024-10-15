@@ -58,8 +58,13 @@ static ObjString* allocateString(char* chars, int length,
     string->length = length;
     string->chars = chars;
     string->hash = hash;
+
+    // GC: https://craftinginterpreters.com/garbage-collection.html#interning-strings
+    push(OBJ_VAL(string));
     // String interning: https://craftinginterpreters.com/hash-tables.html#string-interning
     tableSet(&vm.strings, string, NIL_VAL);
+    pop();
+
     return string;
 }
 static uint32_t hashString(const char* key, int length) {
