@@ -77,6 +77,13 @@ void initVM() {
     resetStack();
     vm.objects = NULL;
 
+    // The starting threshold here is arbitrary. It’s similar to the initial capacity we picked for
+    // our various dynamic arrays. The goal is to not trigger the first few GCs too quickly but also
+    // to not wait too long. If we had some real-world Lox programs, we could profile those to tune
+    // this. But since all we have are toy programs, I just picked a number.
+    vm.bytesAllocated = 0;
+    vm.nextGC = 1024 * 1024;
+
     vm.grayCount = 0;
     vm.grayCapacity = 0;
     vm.grayStack = NULL;

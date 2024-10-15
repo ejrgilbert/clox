@@ -216,9 +216,12 @@ static void sweep() {
         }
     }
 }
+
+#define GC_HEAP_GROW_FACTOR 2
 void collectGarbage() {
 #ifdef DEBUG_LOG_GC
     printf("-- gc begin\n");
+    size_t before = vm.bytesAllocated;
 #endif
 
     // MARK
@@ -236,12 +239,24 @@ void collectGarbage() {
     // SWEEP
     sweep();
 
+    // The sweep phase frees objects by calling reallocate(), which lowers the value of bytesAllocated,
+    // so after the collection completes, we know how many live bytes remain. We adjust the threshold of
+    // the next GC based on that.
+
+    // The threshold is a multiple of the heap size. This way, as the amount of memory the program uses grows,
+    // the threshold moves farther out to limit the total time spent re-traversing the larger live set.
+    vm.nextGC = vm.bytesAllocated * GC_HEAP_GROW_FACTOR;
+
 #ifdef DEBUG_LOG_GC
     printf("-- gc end\n");
+    printf("   collected %zu bytes (from %zu to %zu) next at %zu\n",
+         before - vm.bytesAllocated, before, vm.bytesAllocated,
+         vm.nextGC);
 #endif
 }
-
 void* reallocate(void* pointer, size_t oldSize, size_t newSize) {
+    // Every time we allocate or free some memory, we adjust the counter by that delta.
+    vm.bytesAllocated += newSize - oldSize;
     if (newSize > oldSize) {
         // Whenever we call reallocate() to acquire more memory, we force a collection to run.
         // The if check is because reallocate() is also called to free or shrink an allocation.
@@ -257,6 +272,11 @@ void* reallocate(void* pointer, size_t oldSize, size_t newSize) {
 #ifdef DEBUG_STRESS_GC
         collectGarbage();
 #endif
+
+        // When the total crosses the limit, we run the collector.
+        if (vm.bytesAllocated > vm.nextGC) {
+            collectGarbage();
+        }
     }
     // Since all we passed in was a bare pointer to the first byte of memory,
     // what does it mean to “update” the block’s size? Under the hood, the
