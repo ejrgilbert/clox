@@ -148,6 +148,12 @@ static void blackenObject(Obj* object) {
             }
             break;
         }
+        case OBJ_FUNCTION: {
+            ObjFunction* function = (ObjFunction*)object;
+            markObject((Obj*)function->name);
+            markArray(&function->chunk.constants);
+            break;
+        }
         case OBJ_UPVALUE:
             // When an upvalue is closed, it contains a reference to the closed-over value. Since the value
             // is no longer on the stack, we need to make sure we trace the reference to it from the upvalue.
