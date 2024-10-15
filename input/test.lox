@@ -1,8 +1,16 @@
-fun outer() {
-  var x = "outside";
-  fun inner() {
-    print x;
-  }
-  inner();
+var globalSet;
+var globalGet;
+
+fun main() {
+  var a = "initial";
+
+  fun set() { a = "updated"; }
+  fun get() { print a; }
+
+  globalSet = set;
+  globalGet = get;
 }
-outer();
+
+main();
+globalSet();
+globalGet();
