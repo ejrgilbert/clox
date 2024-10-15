@@ -1,5 +1,6 @@
 #include <stdlib.h>
 
+#include "compiler.h"
 #include "memory.h"
 #include "vm.h"
 
@@ -83,9 +84,31 @@ static void markRoots() {
         markValue(*slot);
     }
 
+    // Most function call state lives in the value stack, but the VM maintains a separate stack
+    // of CallFrames. Each CallFrame contains a pointer to the closure being called. The VM uses
+    // those pointers to access constants and upvalues, so those closures need to be kept around too.
+    for (int i = 0; i < vm.frameCount; i++) {
+        markObject((Obj*)vm.frames[i].closure);
+    }
+
+    // the open upvalue list is another set of values that the VM can directly reach.
+    for (ObjUpvalue* upvalue = vm.openUpvalues;
+           upvalue != NULL;
+           upvalue = upvalue->next) {
+        markObject((Obj*)upvalue);
+    }
+
     // Marking the stack takes care of local variables and temporaries. The other main source
     // of roots are the global variables. Those live in a hash table owned by the VM.
     markTable(&vm.globals);
+
+    // Remember also that a collection can begin during any allocation. Those allocations don’t just
+    // happen while the user’s program is running. The compiler itself periodically grabs memory from
+    // the heap for literals and the constant table. If the GC runs while we’re in the middle of compiling,
+    // then any values the compiler directly accesses need to be treated as roots too.
+
+    // To keep the compiler module cleanly separated from the rest of the VM, we'll do that in a separate function.
+    markCompilerRoots();
 }
 void collectGarbage() {
 #ifdef DEBUG_LOG_GC

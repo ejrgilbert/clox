@@ -4,6 +4,7 @@
 
 #include "common.h"
 #include "compiler.h"
+#include "memory.h"
 #include "scanner.h"
 
 #ifdef DEBUG_PRINT_CODE
@@ -818,4 +819,14 @@ ObjFunction* compile(const char* source) {
     }
     ObjFunction* function = endCompiler();
     return parser.hadError ? NULL : function;
+}
+void markCompilerRoots() {
+    // Fortunately, the compiler doesn't have too many values that it hangs on to. The only object
+    // it uses is the ObjFunction it is compiling into. Since function declarations can nest, the
+    // compiler has a linked list of those and we walk the whole list.
+    Compiler* compiler = current;
+    while (compiler != NULL) {
+        markObject((Obj*)compiler->function);
+        compiler = compiler->enclosing;
+    }
 }
