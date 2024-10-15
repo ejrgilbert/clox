@@ -225,6 +225,10 @@ void collectGarbage() {
     markRoots();
     traceReferences();
 
+    // handle string pool weak references
+    // See: https://craftinginterpreters.com/garbage-collection.html#weak-references-and-the-string-pool
+    tableRemoveWhite(&vm.strings);
+
     // When the loop in traceReferences() exits, we have processed all the objects we could get our hands on.
     // The gray stack is empty, and every object in the heap is either black or white. The black objects are
     // reachable, and we want to hang on to them. Anything still white never got touched by the trace and is
