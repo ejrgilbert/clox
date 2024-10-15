@@ -136,3 +136,21 @@ ObjString* tableFindString(Table* table, const char* chars,
         index = (index + 1) % table->capacity;
     }
 }
+void tableRemoveWhite(Table* table) {
+    // See: https://craftinginterpreters.com/garbage-collection.html#weak-references-and-the-string-pool
+    for (int i = 0; i < table->capacity; i++) {
+        Entry* entry = &table->entries[i];
+        if (entry->key != NULL && !entry->key->obj.isMarked) {
+            tableDelete(table, entry->key);
+        }
+    }
+}
+void markTable(Table* table) {
+    // We walk the entry array. For each one, we mark its value. We also mark the key strings
+    // for each entry since the GC manages those strings too.
+    for (int i = 0; i < table->capacity; i++) {
+        Entry* entry = &table->entries[i];
+        markObject((Obj*)entry->key);
+        markValue(entry->value);
+    }
+}

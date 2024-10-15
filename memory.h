@@ -26,6 +26,8 @@
 // add a garbage collector that needs to keep track of how much memory
 // is in use.
 void* reallocate(void* pointer, size_t oldSize, size_t newSize);
+void markObject(Obj* object);
+void markValue(Value value);
 void freeObjects();
 
 #endif

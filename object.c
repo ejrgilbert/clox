@@ -13,10 +13,15 @@
 static Obj* allocateObject(size_t size, ObjType type) {
     Obj* object = (Obj*)reallocate(NULL, 0, size);
     object->type = type;
+    object->isMarked = false;
 
     // GC: Every time we allocate an Obj, we insert it in the list
     object->next = vm.objects;
     vm.objects = object;
+
+#ifdef DEBUG_LOG_GC
+    printf("%p allocate %zu for %d\n", (void*)object, size, type);
+#endif
     return object;
 }
 ObjClosure* newClosure(ObjFunction* function) {
@@ -53,8 +58,13 @@ static ObjString* allocateString(char* chars, int length,
     string->length = length;
     string->chars = chars;
     string->hash = hash;
+
+    // GC: https://craftinginterpreters.com/garbage-collection.html#interning-strings
+    push(OBJ_VAL(string));
     // String interning: https://craftinginterpreters.com/hash-tables.html#string-interning
     tableSet(&vm.strings, string, NIL_VAL);
+    pop();
+
     return string;
 }
 static uint32_t hashString(const char* key, int length) {
