@@ -194,13 +194,43 @@ static void traceReferences() {
         blackenObject(object);
     }
 }
+static void sweep() {
+    // See: https://craftinginterpreters.com/garbage-collection.html#sweeping-unused-objects
+    Obj* previous = NULL;
+    Obj* object = vm.objects;
+    while (object != NULL) {
+        if (object->isMarked) {
+            object->isMarked = false;
+            previous = object;
+            object = object->next;
+        } else {
+            Obj* unreached = object;
+            object = object->next;
+            if (previous != NULL) {
+                previous->next = object;
+            } else {
+                vm.objects = object;
+            }
+
+            freeObject(unreached);
+        }
+    }
+}
 void collectGarbage() {
 #ifdef DEBUG_LOG_GC
     printf("-- gc begin\n");
 #endif
 
+    // MARK
     markRoots();
     traceReferences();
+
+    // When the loop in traceReferences() exits, we have processed all the objects we could get our hands on.
+    // The gray stack is empty, and every object in the heap is either black or white. The black objects are
+    // reachable, and we want to hang on to them. Anything still white never got touched by the trace and is
+    // thus garbage. All that’s left is to reclaim them.
+    // SWEEP
+    sweep();
 
 #ifdef DEBUG_LOG_GC
     printf("-- gc end\n");
