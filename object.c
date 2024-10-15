@@ -13,6 +13,7 @@
 static Obj* allocateObject(size_t size, ObjType type) {
     Obj* object = (Obj*)reallocate(NULL, 0, size);
     object->type = type;
+    object->isMarked = false;
 
     // GC: Every time we allocate an Obj, we insert it in the list
     object->next = vm.objects;

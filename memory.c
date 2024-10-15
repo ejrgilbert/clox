@@ -61,11 +61,38 @@ void freeObjects() {
         object = next;
     }
 }
+void markObject(Obj* object) {
+    if (object == NULL) return;
+#ifdef DEBUG_LOG_GC
+    printf("%p mark ", (void*)object);
+    printValue(OBJ_VAL(object));
+    printf("\n");
+#endif
+    object->isMarked = true;
+}
+void markValue(Value value) {
+    // Some Lox values—numbers, Booleans, and nil—are stored directly inline in Value and require
+    // no heap allocation. The garbage collector doesn’t need to worry about them at all, so the
+    // first thing we do is ensure that the value is an actual heap object.
+    if (IS_OBJ(value)) markObject(AS_OBJ(value));
+}
+static void markRoots() {
+    // Most roots are local variables or temporaries sitting right in the VM’s stack,
+    // so we start by walking that.
+    for (Value* slot = vm.stack; slot < vm.stackTop; slot++) {
+        markValue(*slot);
+    }
 
+    // Marking the stack takes care of local variables and temporaries. The other main source
+    // of roots are the global variables. Those live in a hash table owned by the VM.
+    markTable(&vm.globals);
+}
 void collectGarbage() {
 #ifdef DEBUG_LOG_GC
     printf("-- gc begin\n");
 #endif
+
+    markRoots();
 
 #ifdef DEBUG_LOG_GC
     printf("-- gc end\n");

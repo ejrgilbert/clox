@@ -30,6 +30,7 @@ typedef enum {
 
 struct Obj {
     ObjType type;
+    bool isMarked;
     // See: https://craftinginterpreters.com/strings.html#freeing-objects
     // GC: pointer to the next Obj in the chain
     struct Obj* next;
