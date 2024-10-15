@@ -66,6 +66,15 @@ void freeObjects() {
 }
 void markObject(Obj* object) {
     if (object == NULL) return;
+
+    // References between objects are directed, but that doesn't mean they’re acyclic! It’s entirely possible to
+    // have cycles of objects. When that happens, we need to ensure our collector doesn't get stuck in an infinite
+    // loop as it continually re-adds the same series of objects to the gray stack.
+
+    // If the object is already marked, we don’t mark it again and thus don’t add it to the gray stack. This ensures
+    // that an already-gray object is not redundantly added and that a black object is not inadvertently turned back
+    // to gray. In other words, it keeps the wavefront moving forward through only the white objects.
+    if (object->isMarked) return;
 #ifdef DEBUG_LOG_GC
     printf("%p mark ", (void*)object);
     printValue(OBJ_VAL(object));
@@ -97,6 +106,50 @@ void markValue(Value value) {
     // no heap allocation. The garbage collector doesn’t need to worry about them at all, so the
     // first thing we do is ensure that the value is an actual heap object.
     if (IS_OBJ(value)) markObject(AS_OBJ(value));
+}
+static void markArray(ValueArray* array) {
+    for (int i = 0; i < array->count; i++) {
+        markValue(array->values[i]);
+    }
+}
+static void blackenObject(Obj* object) {
+#ifdef DEBUG_LOG_GC
+    printf("%p blacken ", (void*)object);
+    printValue(OBJ_VAL(object));
+    printf("\n");
+#endif
+    // Each object kind has different fields that might reference other objects, so we need a specific
+    // blob of code for each type.
+
+    // An easy optimization we could do in markObject() is to skip adding strings and native functions to
+    // the gray stack at all since we know they don’t need to be processed. Instead, they could darken from
+    // white straight to black.
+
+    // Note that we don’t set any state in the traversed object itself. There is no direct encoding of
+    // “black” in the object’s state. A black object is any object whose isMarked field is set and that
+    // is no longer in the gray stack.
+    switch (object->type) {
+        case OBJ_CLOSURE: {
+            // Each closure has a reference to the bare function it wraps, as well as an array of pointers to
+            // the upvalues it captures. We trace all of those.
+            ObjClosure* closure = (ObjClosure*)object;
+            markObject((Obj*)closure->function);
+            for (int i = 0; i < closure->upvalueCount; i++) {
+                markObject((Obj*)closure->upvalues[i]);
+            }
+            break;
+        }
+        case OBJ_UPVALUE:
+            // When an upvalue is closed, it contains a reference to the closed-over value. Since the value
+            // is no longer on the stack, we need to make sure we trace the reference to it from the upvalue.
+            markValue(((ObjUpvalue*)object)->closed);
+        break;
+        case OBJ_NATIVE:
+            // contain no outgoing references so there is nothing to traverse.
+        case OBJ_STRING:
+            // contain no outgoing references so there is nothing to traverse.
+          break;
+    }
 }
 static void markRoots() {
     // Most roots are local variables or temporaries sitting right in the VM’s stack,
@@ -131,12 +184,23 @@ static void markRoots() {
     // To keep the compiler module cleanly separated from the rest of the VM, we'll do that in a separate function.
     markCompilerRoots();
 }
+static void traceReferences() {
+    // It’s as close to that textual algorithm as you can get. Until the stack empties, we keep pulling out gray
+    // objects, traversing their references, and then marking them black. Traversing an object’s references may
+    // turn up new white objects that get marked gray and added to the stack. So this function swings back and forth
+    // between turning white objects gray and gray objects black, gradually advancing the entire wavefront forward.
+    while (vm.grayCount > 0) {
+        Obj* object = vm.grayStack[--vm.grayCount];
+        blackenObject(object);
+    }
+}
 void collectGarbage() {
 #ifdef DEBUG_LOG_GC
     printf("-- gc begin\n");
 #endif
 
     markRoots();
+    traceReferences();
 
 #ifdef DEBUG_LOG_GC
     printf("-- gc end\n");
