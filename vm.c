@@ -168,6 +168,23 @@ static bool callValue(Value callee, int argCount) {
     runtimeError("Can only call functions and classes.");
     return false;
 }
+static bool bindMethod(ObjClass* klass, ObjString* name) {
+    // First we look for a method with the given name in the class’s method table. If we don’t find one,
+    // we report a runtime error and bail out. Otherwise, we take the method and wrap it in a new ObjBoundMethod.
+    // We grab the receiver from its home on top of the stack. Finally, we pop the instance and replace the top
+    // of the stack with the bound method.
+    Value method;
+    if (!tableGet(&klass->methods, name, &method)) {
+        runtimeError("Undefined property '%s'.", name->chars);
+        return false;
+    }
+
+    ObjBoundMethod* bound = newBoundMethod(peek(0),
+                                           AS_CLOSURE(method));
+    pop();
+    push(OBJ_VAL(bound));
+    return true;
+}
 static ObjUpvalue* captureUpvalue(Value* local) {
     // See: https://craftinginterpreters.com/closures.html#tracking-open-upvalues
     ObjUpvalue* prevUpvalue = NULL;
@@ -354,8 +371,13 @@ static InterpretResult run() {
                     break;
                 }
 
-                runtimeError("Undefined property '%s'.", name->chars);
-                return INTERPRET_RUNTIME_ERROR;
+                // We insert this after the code to look up a field on the receiver instance. Fields take priority
+                // over and shadow methods, so we look for a field first. If the instance does not have a field
+                // with the given property name, then the name may refer to a method.
+                if (!bindMethod(instance->klass, name)) {
+                    return INTERPRET_RUNTIME_ERROR;
+                }
+                break;
             }
             case OP_SET_PROPERTY: {
                 if (!IS_INSTANCE(peek(1))) {
