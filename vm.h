@@ -26,6 +26,7 @@ typedef struct {
     Table globals;
     // String interning: https://craftinginterpreters.com/hash-tables.html#string-interning
     Table strings;
+    ObjString* initString;
     ObjUpvalue* openUpvalues;
 
     size_t bytesAllocated;

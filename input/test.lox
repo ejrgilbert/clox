@@ -1,11 +1,5 @@
-class Nested {
-  method() {
-    fun function() {
-      print this;
-    }
-
-    function();
-  }
+class Brunch {
+  init(food, drink) {}
 }
 
-Nested().method();
+Brunch("eggs", "coffee");

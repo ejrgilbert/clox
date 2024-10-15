@@ -222,6 +222,7 @@ static void markRoots() {
 
     // To keep the compiler module cleanly separated from the rest of the VM, we'll do that in a separate function.
     markCompilerRoots();
+    markObject((Obj*)vm.initString);
 }
 static void traceReferences() {
     // It’s as close to that textual algorithm as you can get. Until the stack empties, we keep pulling out gray
