@@ -54,6 +54,7 @@ typedef struct {
 } Upvalue;
 typedef enum {
     TYPE_FUNCTION,
+    TYPE_INITIALIZER,
     TYPE_METHOD,
     TYPE_SCRIPT
 } FunctionType;
@@ -155,7 +156,15 @@ static int emitJump(uint8_t instruction) {
     return currentChunk()->count - 2;
 }
 static void emitReturn() {
-    emitByte(OP_NIL);
+    if (current->type == TYPE_INITIALIZER) {
+        // In an initializer, instead of pushing nil onto the stack before returning, we load slot zero, which
+        // contains the instance. This emitReturn() function is also called when compiling a return statement
+        // without a value, so this also correctly handles cases where the user does an early return inside
+        // the initializer.
+        emitBytes(OP_GET_LOCAL, 0);
+    } else {
+        emitByte(OP_NIL);
+    }
     emitByte(OP_RETURN);
 }
 static uint8_t makeConstant(Value value) {
@@ -662,6 +671,11 @@ static void method() {
     consume(TOKEN_IDENTIFIER, "Expect method name.");
     uint8_t constant = identifierConstant(&parser.previous);
     FunctionType type = TYPE_METHOD;
+
+    if (parser.previous.length == 4 &&
+            memcmp(parser.previous.start, "init", 4) == 0) {
+        type = TYPE_INITIALIZER;
+    }
 
     // We use the same function() helper that we wrote for compiling function declarations. That utility
     // function compiles the subsequent parameter list and function body. Then it emits the code to create
