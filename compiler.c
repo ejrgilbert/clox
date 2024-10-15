@@ -631,16 +631,38 @@ static void function(FunctionType type) {
         emitByte(compiler.upvalues[i].index);
     }
 }
+static void method() {
+    consume(TOKEN_IDENTIFIER, "Expect method name.");
+    uint8_t constant = identifierConstant(&parser.previous);
+
+    FunctionType type = TYPE_FUNCTION;
+
+    // We use the same function() helper that we wrote for compiling function declarations. That utility
+    // function compiles the subsequent parameter list and function body. Then it emits the code to create
+    // an ObjClosure and leave it on top of the stack. At runtime, the VM will find the closure there.
+    function(type);
+    emitBytes(OP_METHOD, constant);
+}
 static void classDeclaration() {
     consume(TOKEN_IDENTIFIER, "Expect class name.");
+    Token className = parser.previous;
     uint8_t nameConstant = identifierConstant(&parser.previous);
     declareVariable();
 
     emitBytes(OP_CLASS, nameConstant);
     defineVariable(nameConstant);
 
+    namedVariable(className, false);
     consume(TOKEN_LEFT_BRACE, "Expect '{' before class body.");
+    while (!check(TOKEN_RIGHT_BRACE) && !check(TOKEN_EOF)) {
+        // Lox doesn’t have field declarations, so anything before the closing brace at the end of the class
+        // body must be a method. We stop compiling methods when we hit that final curly or if we reach the
+        // end of the file. The latter check ensures our compiler doesn't get stuck in an infinite loop if
+        // the user accidentally forgets the closing brace.
+        method();
+    }
     consume(TOKEN_RIGHT_BRACE, "Expect '}' after class body.");
+    emitByte(OP_POP);
 }
 static void funDeclaration() {
     // See: https://craftinginterpreters.com/calls-and-functions.html#function-declarations
