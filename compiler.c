@@ -73,10 +73,13 @@ typedef struct Compiler {
     // the number of blocks surrounding the current bit of code we’re compiling
     int scopeDepth;
 } Compiler;
+typedef struct ClassCompiler {
+    struct ClassCompiler* enclosing;
+} ClassCompiler;
 
 Parser parser;
 Compiler* current = NULL;
-
+ClassCompiler* currentClass = NULL;
 
 Chunk* compilingChunk;
 static Chunk* currentChunk() {
@@ -378,6 +381,10 @@ static void variable(bool canAssign) {
     namedVariable(parser.previous, canAssign);
 }
 static void this_(bool canAssign) {
+    if (currentClass == NULL) {
+        error("Can't use 'this' outside of a class.");
+        return;
+    }
     // When the parser function is called, the this token has just been consumed and is stored as the previous
     // token. We call our existing variable() function which compiles identifier expressions as variable accesses.
     // It takes a single Boolean parameter for whether the compiler should look for a following = operator and
@@ -697,6 +704,10 @@ static void classDeclaration() {
     emitBytes(OP_CLASS, nameConstant);
     defineVariable(nameConstant);
 
+    ClassCompiler classCompiler;
+    classCompiler.enclosing = currentClass;
+    currentClass = &classCompiler;
+
     namedVariable(className, false);
     consume(TOKEN_LEFT_BRACE, "Expect '{' before class body.");
     while (!check(TOKEN_RIGHT_BRACE) && !check(TOKEN_EOF)) {
@@ -708,6 +719,7 @@ static void classDeclaration() {
     }
     consume(TOKEN_RIGHT_BRACE, "Expect '}' after class body.");
     emitByte(OP_POP);
+    currentClass = currentClass->enclosing;
 }
 static void funDeclaration() {
     // See: https://craftinginterpreters.com/calls-and-functions.html#function-declarations
