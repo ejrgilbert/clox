@@ -54,6 +54,7 @@ typedef struct {
 } Upvalue;
 typedef enum {
     TYPE_FUNCTION,
+    TYPE_METHOD,
     TYPE_SCRIPT
 } FunctionType;
 
@@ -209,8 +210,22 @@ static void initCompiler(Compiler* compiler, FunctionType type) {
     Local* local = &current->locals[current->localCount++];
     local->depth = 0;
     local->isCaptured = false;
-    local->name.start = "";
-    local->name.length = 0;
+    // At least until they get captured by closures, clox stores every local variable on the VM’s stack. The
+    // compiler keeps track of which slots in the function’s stack window are owned by which local variables.
+    // If you recall, the compiler sets aside stack slot zero by declaring a local variable whose name is an
+    // empty string.
+
+    // For function calls, that slot ends up holding the function being called. Since the slot has no name, the
+    // function body never accesses it. You can guess where this is going. For method calls, we can repurpose that
+    // slot to store the receiver. Slot zero will store the instance that this is bound to. In order to compile
+    // this expressions, the compiler simply needs to give the correct name to that local variable.
+    if (type != TYPE_FUNCTION) {
+        local->name.start = "this";
+        local->name.length = 4;
+    } else {
+        local->name.start = "";
+        local->name.length = 0;
+    }
 }
 static ObjFunction* endCompiler() {
     emitReturn();
@@ -348,6 +363,18 @@ static void namedVariable(Token name, bool canAssign) {
 static void variable(bool canAssign) {
     namedVariable(parser.previous, canAssign);
 }
+static void this_(bool canAssign) {
+    // When the parser function is called, the this token has just been consumed and is stored as the previous
+    // token. We call our existing variable() function which compiles identifier expressions as variable accesses.
+    // It takes a single Boolean parameter for whether the compiler should look for a following = operator and
+    // parse a setter. You can’t assign to this, so we pass false to disallow that.
+
+    // The variable() function doesn’t care that this has its own token type and isn’t an identifier. It is happy
+    // to treat the lexeme “this” as if it were a variable name and then look it up using the existing scope
+    // resolution machinery. Right now, that lookup will fail because we never declared a variable whose name is
+    // “this”. It’s time to think about where the receiver should live in memory.
+    variable(false);
+}
 static void unary(bool canAssign) {
     TokenType operatorType = parser.previous.type;
 
@@ -400,7 +427,7 @@ ParseRule rules[] = {
     [TOKEN_PRINT]         = {NULL,     NULL,   PREC_NONE},
     [TOKEN_RETURN]        = {NULL,     NULL,   PREC_NONE},
     [TOKEN_SUPER]         = {NULL,     NULL,   PREC_NONE},
-    [TOKEN_THIS]          = {NULL,     NULL,   PREC_NONE},
+    [TOKEN_THIS]          = {this_,    NULL,   PREC_NONE},
     [TOKEN_TRUE]          = {literal,  NULL,   PREC_NONE},
     [TOKEN_VAR]           = {NULL,     NULL,   PREC_NONE},
     [TOKEN_WHILE]         = {NULL,     NULL,   PREC_NONE},
@@ -634,8 +661,7 @@ static void function(FunctionType type) {
 static void method() {
     consume(TOKEN_IDENTIFIER, "Expect method name.");
     uint8_t constant = identifierConstant(&parser.previous);
-
-    FunctionType type = TYPE_FUNCTION;
+    FunctionType type = TYPE_METHOD;
 
     // We use the same function() helper that we wrote for compiling function declarations. That utility
     // function compiles the subsequent parameter list and function body. Then it emits the code to create
