@@ -54,6 +54,8 @@ typedef struct {
 } Upvalue;
 typedef enum {
     TYPE_FUNCTION,
+    TYPE_INITIALIZER,
+    TYPE_METHOD,
     TYPE_SCRIPT
 } FunctionType;
 
@@ -154,7 +156,15 @@ static int emitJump(uint8_t instruction) {
     return currentChunk()->count - 2;
 }
 static void emitReturn() {
-    emitByte(OP_NIL);
+    if (current->type == TYPE_INITIALIZER) {
+        // In an initializer, instead of pushing nil onto the stack before returning, we load slot zero, which
+        // contains the instance. This emitReturn() function is also called when compiling a return statement
+        // without a value, so this also correctly handles cases where the user does an early return inside
+        // the initializer.
+        emitBytes(OP_GET_LOCAL, 0);
+    } else {
+        emitByte(OP_NIL);
+    }
     emitByte(OP_RETURN);
 }
 static uint8_t makeConstant(Value value) {
@@ -209,8 +219,22 @@ static void initCompiler(Compiler* compiler, FunctionType type) {
     Local* local = &current->locals[current->localCount++];
     local->depth = 0;
     local->isCaptured = false;
-    local->name.start = "";
-    local->name.length = 0;
+    // At least until they get captured by closures, clox stores every local variable on the VM’s stack. The
+    // compiler keeps track of which slots in the function’s stack window are owned by which local variables.
+    // If you recall, the compiler sets aside stack slot zero by declaring a local variable whose name is an
+    // empty string.
+
+    // For function calls, that slot ends up holding the function being called. Since the slot has no name, the
+    // function body never accesses it. You can guess where this is going. For method calls, we can repurpose that
+    // slot to store the receiver. Slot zero will store the instance that this is bound to. In order to compile
+    // this expressions, the compiler simply needs to give the correct name to that local variable.
+    if (type != TYPE_FUNCTION) {
+        local->name.start = "this";
+        local->name.length = 4;
+    } else {
+        local->name.start = "";
+        local->name.length = 0;
+    }
 }
 static ObjFunction* endCompiler() {
     emitReturn();
@@ -287,6 +311,11 @@ static void dot(bool canAssign) {
     if (canAssign && match(TOKEN_EQUAL)) {
         expression();
         emitBytes(OP_SET_PROPERTY, name);
+    } else if (match(TOKEN_LEFT_PAREN)) {
+        // superinstruction to optimize method calls!
+        uint8_t argCount = argumentList();
+        emitBytes(OP_INVOKE, name);
+        emitByte(argCount);
     } else {
         emitBytes(OP_GET_PROPERTY, name);
     }
@@ -348,6 +377,18 @@ static void namedVariable(Token name, bool canAssign) {
 static void variable(bool canAssign) {
     namedVariable(parser.previous, canAssign);
 }
+static void this_(bool canAssign) {
+    // When the parser function is called, the this token has just been consumed and is stored as the previous
+    // token. We call our existing variable() function which compiles identifier expressions as variable accesses.
+    // It takes a single Boolean parameter for whether the compiler should look for a following = operator and
+    // parse a setter. You can’t assign to this, so we pass false to disallow that.
+
+    // The variable() function doesn’t care that this has its own token type and isn’t an identifier. It is happy
+    // to treat the lexeme “this” as if it were a variable name and then look it up using the existing scope
+    // resolution machinery. Right now, that lookup will fail because we never declared a variable whose name is
+    // “this”. It’s time to think about where the receiver should live in memory.
+    variable(false);
+}
 static void unary(bool canAssign) {
     TokenType operatorType = parser.previous.type;
 
@@ -400,7 +441,7 @@ ParseRule rules[] = {
     [TOKEN_PRINT]         = {NULL,     NULL,   PREC_NONE},
     [TOKEN_RETURN]        = {NULL,     NULL,   PREC_NONE},
     [TOKEN_SUPER]         = {NULL,     NULL,   PREC_NONE},
-    [TOKEN_THIS]          = {NULL,     NULL,   PREC_NONE},
+    [TOKEN_THIS]          = {this_,    NULL,   PREC_NONE},
     [TOKEN_TRUE]          = {literal,  NULL,   PREC_NONE},
     [TOKEN_VAR]           = {NULL,     NULL,   PREC_NONE},
     [TOKEN_WHILE]         = {NULL,     NULL,   PREC_NONE},
@@ -631,16 +672,42 @@ static void function(FunctionType type) {
         emitByte(compiler.upvalues[i].index);
     }
 }
+static void method() {
+    consume(TOKEN_IDENTIFIER, "Expect method name.");
+    uint8_t constant = identifierConstant(&parser.previous);
+    FunctionType type = TYPE_METHOD;
+
+    if (parser.previous.length == 4 &&
+            memcmp(parser.previous.start, "init", 4) == 0) {
+        type = TYPE_INITIALIZER;
+    }
+
+    // We use the same function() helper that we wrote for compiling function declarations. That utility
+    // function compiles the subsequent parameter list and function body. Then it emits the code to create
+    // an ObjClosure and leave it on top of the stack. At runtime, the VM will find the closure there.
+    function(type);
+    emitBytes(OP_METHOD, constant);
+}
 static void classDeclaration() {
     consume(TOKEN_IDENTIFIER, "Expect class name.");
+    Token className = parser.previous;
     uint8_t nameConstant = identifierConstant(&parser.previous);
     declareVariable();
 
     emitBytes(OP_CLASS, nameConstant);
     defineVariable(nameConstant);
 
+    namedVariable(className, false);
     consume(TOKEN_LEFT_BRACE, "Expect '{' before class body.");
+    while (!check(TOKEN_RIGHT_BRACE) && !check(TOKEN_EOF)) {
+        // Lox doesn’t have field declarations, so anything before the closing brace at the end of the class
+        // body must be a method. We stop compiling methods when we hit that final curly or if we reach the
+        // end of the file. The latter check ensures our compiler doesn't get stuck in an infinite loop if
+        // the user accidentally forgets the closing brace.
+        method();
+    }
     consume(TOKEN_RIGHT_BRACE, "Expect '}' after class body.");
+    emitByte(OP_POP);
 }
 static void funDeclaration() {
     // See: https://craftinginterpreters.com/calls-and-functions.html#function-declarations
@@ -746,6 +813,9 @@ static void returnStatement() {
     if (match(TOKEN_SEMICOLON)) {
         emitReturn();
     } else {
+        if (current->type == TYPE_INITIALIZER) {
+            error("Can't return a value from an initializer.");
+        }
         expression();
         consume(TOKEN_SEMICOLON, "Expect ';' after return value.");
         emitByte(OP_RETURN);

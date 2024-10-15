@@ -15,7 +15,12 @@ static void freeObject(Obj* object) {
 #endif
 
     switch (object->type) {
+        case OBJ_BOUND_METHOD:
+            FREE(ObjBoundMethod, object);
+        break;
         case OBJ_CLASS: {
+            ObjClass* klass = (ObjClass*)object;
+            freeTable(&klass->methods);
             FREE(ObjClass, object);
             break;
         }
@@ -139,9 +144,16 @@ static void blackenObject(Obj* object) {
     // “black” in the object’s state. A black object is any object whose isMarked field is set and that
     // is no longer in the gray stack.
     switch (object->type) {
+        case OBJ_BOUND_METHOD: {
+            ObjBoundMethod* bound = (ObjBoundMethod*)object;
+            markValue(bound->receiver);
+            markObject((Obj*)bound->method);
+            break;
+        }
         case OBJ_CLASS: {
             ObjClass* klass = (ObjClass*)object;
             markObject((Obj*)klass->name);
+            markTable(&klass->methods);
             break;
         }
         case OBJ_CLOSURE: {
@@ -210,6 +222,7 @@ static void markRoots() {
 
     // To keep the compiler module cleanly separated from the rest of the VM, we'll do that in a separate function.
     markCompilerRoots();
+    markObject((Obj*)vm.initString);
 }
 static void traceReferences() {
     // It’s as close to that textual algorithm as you can get. Until the stack empties, we keep pulling out gray
