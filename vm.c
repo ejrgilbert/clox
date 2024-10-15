@@ -189,6 +189,29 @@ static bool callValue(Value callee, int argCount) {
     runtimeError("Can only call functions and classes.");
     return false;
 }
+static bool invokeFromClass(ObjClass* klass, ObjString* name,
+                            int argCount) {
+    Value method;
+    if (!tableGet(&klass->methods, name, &method)) {
+        runtimeError("Undefined property '%s'.", name->chars);
+        return false;
+    }
+    return call(AS_CLOSURE(method), argCount);
+}
+static bool invoke(ObjString* name, int argCount) {
+    // First we grab the receiver off the stack. The arguments passed to the method are above it on the stack,
+    // so we peek that many slots down. Then it’s a simple matter to cast the object to an instance and invoke
+    // the method on it.
+    Value receiver = peek(argCount);
+
+    if (!IS_INSTANCE(receiver)) {
+        runtimeError("Only instances have methods.");
+        return false;
+    }
+
+    ObjInstance* instance = AS_INSTANCE(receiver);
+    return invokeFromClass(instance->klass, name, argCount);
+}
 static bool bindMethod(ObjClass* klass, ObjString* name) {
     // First we look for a method with the given name in the class’s method table. If we don’t find one,
     // we report a runtime error and bail out. Otherwise, we take the method and wrap it in a new ObjBoundMethod.
@@ -477,6 +500,21 @@ static InterpretResult run() {
                 // If callValue() is successful, there will be a new frame on the CallFrame stack for the called
                 // function. The run() function has its own cached pointer to the current frame, so we need to
                 // update that.
+                frame = &vm.frames[vm.frameCount - 1];
+                break;
+            }
+            case OP_INVOKE: {
+                // Here, we look up the method name from the first operand and then read the argument count
+                // operand. Then we hand off to invoke() to do the heavy lifting. That function returns true
+                // if the invocation succeeds. As usual, a false return means a runtime error occurred. We
+                // check for that here and abort the interpreter if disaster has struck.
+                ObjString* method = READ_STRING();
+                int argCount = READ_BYTE();
+                if (!invoke(method, argCount)) {
+                    return INTERPRET_RUNTIME_ERROR;
+                }
+                // Finally, assuming the invocation succeeded, then there is a new CallFrame on the stack, so we
+                // refresh our cached copy of the current frame in frame.
                 frame = &vm.frames[vm.frameCount - 1];
                 break;
             }
